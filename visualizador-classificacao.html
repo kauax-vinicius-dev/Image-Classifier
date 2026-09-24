@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classificação de imagens</title>
+  <style>
+    :root {
+      --background: #f4f5f7;
+      --surface: #ffffff;
+      --text: #1d2733;
+      --muted: #667485;
+      --border: #d9dee5;
+      --accent: #2b62d9;
+      --track: #e6e9ee;
+      --high: #2f8f66;
+      --medium: #d69a2d;
+      --low: #c4463c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 40px 16px;
+      background: var(--background);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 180px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: 0.85rem/1.5 ui-monospace, Consolas, monospace;
+      resize: vertical;
+    }
+
+    textarea:focus,
+    button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0 28px;
+    }
+
+    button {
+      padding: 8px 18px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: #ffffff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      border-color: var(--border);
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .message {
+      color: var(--low);
+      font-size: 0.9rem;
+    }
+
+    .card {
+      margin-bottom: 20px;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      word-break: break-all;
+    }
+
+    .details {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4px 16px;
+      margin: 0 0 20px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+
+    .details dt {
+      color: var(--muted);
+    }
+
+    .details dd {
+      margin: 0;
+      word-break: break-all;
+    }
+
+    .labels {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .label {
+      display: grid;
+      grid-template-columns: 130px 1fr 56px;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 0;
+      font-size: 0.9rem;
+    }
+
+    .track {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 4px;
+      background: var(--track);
+    }
+
+    .fill {
+      height: 100%;
+      border-radius: 4px;
+    }
+
+    .fill.high {
+      background: var(--high);
+    }
+
+    .fill.medium {
+      background: var(--medium);
+    }
+
+    .fill.low {
+      background: var(--low);
+    }
+
+    .percentage {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 480px) {
+      .label {
+        grid-template-columns: 1fr 56px;
+      }
+
+      .track {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Classificação de imagens</h1>
+
+    <textarea id="json-input" placeholder="Cole aqui o JSON salvo no DynamoDB" spellcheck="false"></textarea>
+
+    <div class="actions">
+      <button id="visualize-button" type="button">Visualizar</button>
+      <button id="clear-button" class="secondary" type="button">Limpar</button>
+      <span id="message" class="message" role="alert"></span>
+    </div>
+
+    <section id="results"></section>
+  </main>
+
+  <script>
+    const DYNAMO_TYPES = ["S", "N", "BOOL", "NULL", "L", "M"];
+    const HIGH_CONFIDENCE = 90;
+    const MEDIUM_CONFIDENCE = 70;
+
+    const jsonInput = document.getElementById("json-input");
+    const visualizeButton = document.getElementById("visualize-button");
+    const clearButton = document.getElementById("clear-button");
+    const message = document.getElementById("message");
+    const results = document.getElementById("results");
+
+    function mapValues(object, transform) {
+      return Object.fromEntries(
+        Object.entries(object).map(([key, value]) => [key, transform(value)])
+      );
+    }
+
+    function isDynamoAttribute(value) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+      }
+      const keys = Object.keys(value);
+      return keys.length === 1 && DYNAMO_TYPES.includes(keys[0]);
+    }
+
+    function fromAttribute(attribute) {
+      const [type, content] = Object.entries(attribute)[0];
+
+      if (type === "N") return Number(content);
+      if (type === "L") return content.map(normalize);
+      if (type === "M") return mapValues(content, normalize);
+      return content;
+    }
+
+    function normalize(value) {
+      if (Array.isArray(value)) return value.map(normalize);
+      if (value === null || typeof value !== "object") return value;
+      if (isDynamoAttribute(value)) return fromAttribute(value);
+      return mapValues(value, normalize);
+    }
+
+    function extractRecords(data) {
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data.Items)) return data.Items;
+      if (data.Item) return [data.Item];
+      return [data];
+    }
+
+    function confidenceLevel(confidence) {
+      if (confidence >= HIGH_CONFIDENCE) return "high";
+      if (confidence >= MEDIUM_CONFIDENCE) return "medium";
+      return "low";
+    }
+
+    function formatDate(isoDate) {
+      if (!isoDate) return "—";
+      return new Date(isoDate).toLocaleString("pt-BR");
+    }
+
+    function createElement(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    function createDetails(record, labelCount) {
+      const details = createElement("dl", "details");
+      const entries = [
+        ["Bucket", record.bucket ?? "—"],
+        ["Enviada em", formatDate(record.createdAt)],
+        ["Rótulos", String(labelCount)]
+      ];
+
+      entries.forEach(([term, description]) => {
+        details.append(
+          createElement("dt", "", term),
+          createElement("dd", "", description)
+        );
+      });
+
+      return details;
+    }
+
+    function createLabelRow(label) {
+      const confidence = Number(label.Confidence) || 0;
+      const row = createElement("li", "label");
+      const track = createElement("div", "track");
+      const fill = createElement("div", `fill ${confidenceLevel(confidence)}`);
+
+      fill.style.width = `${confidence}%`;
+      track.append(fill);
+
+      row.append(
+        createElement("span", "", label.Name ?? "Sem nome"),
+        track,
+        createElement("span", "percentage", `${confidence.toFixed(1)}%`)
+      );
+
+      return row;
+    }
+
+    function createLabelList(labels) {
+      if (labels.length === 0) {
+        return createElement("p", "empty", "Nenhum rótulo encontrado.");
+      }
+
+      const sorted = [...labels].sort((a, b) => b.Confidence - a.Confidence);
+      const list = createElement("ul", "labels");
+      list.append(...sorted.map(createLabelRow));
+      return list;
+    }
+
+    function createCard(record) {
+      const labels = Array.isArray(record.labels) ? record.labels : [];
+      const card = createElement("article", "card");
+
+      card.append(
+        createElement("h2", "", record.image ?? "Imagem sem nome"),
+        createDetails(record, labels.length),
+        createLabelList(labels)
+      );
+
+      return card;
+    }
+
+    function showMessage(text) {
+      message.textContent = text;
+    }
+
+    function visualize() {
+      showMessage("");
+      results.replaceChildren();
+
+      const rawText = jsonInput.value.trim();
+      if (!rawText) {
+        showMessage("Cole um JSON para visualizar.");
+        return;
+      }
+
+      let data;
+      try {
+        data = normalize(JSON.parse(rawText));
+      } catch {
+        showMessage("JSON inválido. Confira se ele foi copiado por completo.");
+        return;
+      }
+
+      results.append(...extractRecords(data).map(createCard));
+    }
+
+    function clear() {
+      jsonInput.value = "";
+      showMessage("");
+      results.replaceChildren();
+      jsonInput.focus();
+    }
+
+    visualizeButton.addEventListener("click", visualize);
+    clearButton.addEventListener("click", clear);
+  </script>
+</body>
+
+</html>
