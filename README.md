@@ -2,7 +2,7 @@
 
 Ao enviar uma foto para o S3, uma função Lambda pede ao Rekognition para classificá-la e salva o resultado no DynamoDB. Um visualizador em HTML mostra essa classificação de forma legível.
 
-![Diagrama da arquitetura](img/diagrama.jpeg)
+![Diagrama da arquitetura](img/diagrama.jpg)
 
 ## Como funciona
 
